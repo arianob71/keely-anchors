@@ -1,0 +1,4 @@
+sayara-anchor v1
+date:2026-10-14
+root:b646e163e8b669d0d25430c9091dd07c7a4f4f995eebe2b9047fe58ca049305a
+leaves:4
