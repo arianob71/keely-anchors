@@ -1,14 +1,19 @@
-# Sayara anchor log
+# Keely anchor log
 
-A public, append-only record of sayara's rental-record anchors.
+A public, append-only record of Keely's rental-record anchors.
 
-Every evening sayara takes the fingerprints of that day's rental records —
+Every evening Keely takes the fingerprints of that day's rental records —
 inspection photos, damage notes, signed contracts, and every change to a
 booking — builds a Merkle tree, and writes the root into a short manifest. The
 manifest's SHA-256 is submitted to the [OpenTimestamps](https://opentimestamps.org)
 calendars, and a few hours later a Bitcoin block commits to it.
 
-This repository is the copy nobody at sayara can quietly rewrite. If a record
+Records sealed before October 2026 are labelled sayara (`sayara-anchor v1`/`v2`,
+`sayara-anchor-…` files, `SY-` refs); later ones are labelled Keely. Both are
+accepted for good by `tools/verify_keely_proof.py`, and nothing about the older records changed.
+`tools/verify_sayara_proof.py` is an identical copy kept for old links.
+
+This repository is the copy nobody at Keely can quietly rewrite. If a record
 is ever disputed, what is published here is what was published then.
 
 ## What is in each folder
@@ -35,11 +40,11 @@ pip install opentimestamps-client
 ots verify -f manifest.txt alice.btc.calendar.opentimestamps.org.ots
 ```
 
-Or with `tools/verify_sayara_proof.py` from this repo, which needs only Python 3
+Or with `tools/verify_keely_proof.py` from this repo, which needs only Python 3
 and reads block headers from two independent explorers:
 
 ```bash
-python3 tools/verify_sayara_proof.py alice.btc.calendar.opentimestamps.org.ots manifest.txt
+python3 tools/verify_keely_proof.py alice.btc.calendar.opentimestamps.org.ots manifest.txt
 ```
 
 ## Verifying one booking
@@ -47,7 +52,7 @@ python3 tools/verify_sayara_proof.py alice.btc.calendar.opentimestamps.org.ots m
 An operator can export a booking's `path.json`. Pass it as a third argument:
 
 ```bash
-python3 tools/verify_sayara_proof.py <proof.ots> manifest.txt SY-ABC123-path.json
+python3 tools/verify_keely_proof.py <proof.ots> manifest.txt KY-ABC123-path.json
 ```
 
 That recomputes the booking's leaf, replays its Merkle path to the root, and
