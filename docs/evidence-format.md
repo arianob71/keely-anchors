@@ -1,7 +1,11 @@
-# Sayara evidence format
+# Keely evidence format
 
-How a sayara rental record is sealed, and how anyone can check it without
-sayara's cooperation. Everything here is reproducible from the data an operator
+Records sealed before October 2026 are labelled sayara (`sayara-anchor v1`/`v2`,
+`sayara-anchor-…` files, `SY-` refs); later ones are labelled Keely. Both are
+accepted for good, and nothing about the older records changed.
+
+How a Keely rental record is sealed, and how anyone can check it without
+Keely's cooperation. Everything here is reproducible from the data an operator
 can export plus `sha256` and the public OpenTimestamps and Bitcoin networks.
 
 Three layers:
@@ -129,11 +133,14 @@ assert h == root
 Four lines, with a trailing newline, and this is the file that gets timestamped:
 
 ```
-sayara-anchor v2
+keely-anchor v3
 date:2026-10-15
 root:<64 hex>
 leaves:<count>
 ```
+
+The first line is `keely-anchor v3`; v3 follows exactly the v2 rules and only the
+name changed. Older anchors start `sayara-anchor v2` (or `v1`, one-chain leaves).
 
 `digest = sha256( manifest bytes )`. Several anchors may share a date; each is
 a separate run covering everything newer than the previous one.
@@ -160,7 +167,7 @@ line, no booking ids), one `.ots` per calendar, and `block.txt` once a Bitcoin
 block confirms it. `anchors.public_url` points at the folder.
 
 That matters for a reason the hashes alone cannot cover: it puts the history
-somewhere sayara does not control. A proof you only ever receive from the party
+somewhere Keely does not control. A proof you only ever receive from the party
 it indicts is worth less than the same proof published before the dispute.
 Mirroring is best effort — a failed publish is retried on the next run and never
 affects the anchor itself.
@@ -169,21 +176,21 @@ affects the anchor itself.
 
 ## 4. Verifying a bundle, start to finish
 
-The downloaded bundle is `sayara-anchor-<date>-<HHMM>.txt` (the manifest), one
-`.ots` per calendar, and `SY-<ref>-path.json`.
+The downloaded bundle is `keely-anchor-<date>-<HHMM>.txt` (the manifest), one
+`.ots` per calendar, and `KY-<ref>-path.json`.
 
 ```bash
 # 1. The manifest's digest is what was timestamped.
-sha256sum sayara-anchor-2026-10-15-2300.txt
+sha256sum keely-anchor-2026-10-15-2300.txt
 
 # 2. Bitcoin confirms the timestamp. Needs the standard client:
 #    pip install opentimestamps-client
-ots verify -f sayara-anchor-2026-10-15-2300.txt \
-           sayara-anchor-2026-10-15-2300-alice.btc.calendar.opentimestamps.org.ots
+ots verify -f keely-anchor-2026-10-15-2300.txt \
+           keely-anchor-2026-10-15-2300-alice.btc.calendar.opentimestamps.org.ots
 # → "Success! Bitcoin block <height> attests existence as of <date>"
 ```
 
-3. Open `SY-<ref>-path.json`. Recompute the leaf from `booking_id`,
+3. Open `KY-<ref>-path.json`. Recompute the leaf from `booking_id`,
    `evidence_head` and `audit_head` with the v2 formula and check it equals
    `leaf`.
 4. Replay `path` as above and check you reach `root`.
@@ -193,7 +200,7 @@ ots verify -f sayara-anchor-2026-10-15-2300.txt \
    `booking_audit_log` rows and the stored files, then run the checks in
    sections 1 and 2. The heads you recompute must equal the ones in the JSON.
 
-Steps 1–5 need nothing from sayara beyond the files themselves. Step 6 needs
+Steps 1–5 need nothing from Keely beyond the files themselves. Step 6 needs
 the rows, but it needs no trust: anything altered fails.
 
 ---
@@ -204,7 +211,7 @@ the rows, but it needs no trust: anything altered fails.
 Bitcoin block's timestamp, and that it has not changed since. Every file,
 label, path, note and booking-field change is inside a hash committed to that
 block. Alter any byte and the chain breaks; remove an entry and the links
-either side no longer meet. Nobody — operator, renter or sayara — can
+either side no longer meet. Nobody — operator, renter or Keely — can
 retroactively edit, insert or delete without it showing.
 
 **Does not prove.**
