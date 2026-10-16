@@ -1,6 +1,6 @@
-"""Verify a Sayara rental-record anchor against Bitcoin, without trusting Sayara.
+"""Verify a Keely rental-record anchor against Bitcoin, without trusting Keely.
 
-Usage:  python3 verify_sayara_proof.py <proof.ots> <anchor.txt> [path.json]
+Usage:  python3 verify_keely_proof.py <proof.ots> <anchor.txt> [path.json]
 
 With two arguments it proves the anchor itself: the .txt is what the .ots is a
 proof of, and a Bitcoin block commits to it.
@@ -11,12 +11,18 @@ is replayed, and the result is compared with the anchor's root line.
 
 Needs only Python 3 and internet. Reads block headers from two independent
 public Bitcoin explorers (mempool.space and blockstream.info).
+
+Records sealed before October 2026 are labelled sayara (sayara-anchor v1/v2);
+later ones keely-anchor v3. All three are accepted. tools/verify_sayara_proof.py
+in the public log is an identical copy, kept so old links keep working.
 """
 import hashlib, json, re, sys, urllib.request, datetime
 
 MAGIC = bytes.fromhex('004f70656e54696d657374616d7073000050726f6f6600bf89e2e884e89294')
 BITCOIN = bytes.fromhex('0588960d73d71901')
 PENDING = bytes.fromhex('83dfe30d2ef90c8e')
+# Every manifest header ever issued. v3 has the same rules as v2.
+HEADERS = {'sayara-anchor v1': 1, 'sayara-anchor v2': 2, 'keely-anchor v3': 3}
 
 
 class Reader:
@@ -54,7 +60,7 @@ def walk(r, msg, found):
 
 
 def header(url_base, height):
-    ua = {'User-Agent': 'sayara-verify/1'}
+    ua = {'User-Agent': 'keely-verify/1'}
     get = lambda u: urllib.request.urlopen(urllib.request.Request(u, headers=ua), timeout=20).read().decode().strip()
     block_hash = get(f'{url_base}/block-height/{height}')
     return bytes.fromhex(get(f'{url_base}/block/{block_hash}/header'))
@@ -116,9 +122,11 @@ def main(ots_path, txt_path, path_json=None):
     digest = r.take(32)
 
     anchor_text = open(txt_path, 'rb').read().decode('utf-8', 'replace')
+    head = anchor_text.split('\n', 1)[0].strip()
+    if head not in HEADERS: sys.exit(f'FAIL  unrecognised anchor header {head[:40]!r}')
     file_hash = hashlib.sha256(open(txt_path, 'rb').read()).digest()
     if file_hash != digest: sys.exit('FAIL  the .txt does not match this proof')
-    print(f'OK    file fingerprint matches the proof  ({digest.hex()[:16]}...)')
+    print(f'OK    file fingerprint matches the proof  ({digest.hex()[:16]}...)  [{head}]')
 
     found = []; walk(r, digest, found)
     btc = [f for f in found if f[0] == 'bitcoin']
