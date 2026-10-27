@@ -1,0 +1,4 @@
+keely-anchor v3
+date:2026-10-27
+root:b8bfc2f130b2caa721ac25083b8f9b2fb49e45df5ba35434732e4ac942047bb0
+leaves:3
