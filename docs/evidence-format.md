@@ -49,11 +49,13 @@ the chain. **A v1 row is always checked with the v1 formula.** It was hashed
 that way; re-hashing it under v2 would read as tampering.
 
 `kind` is one of `inspection_out_photo`, `inspection_in_photo`, `damage_note`,
-`contract`.
+`contract`, `invoice_issued`.
 
-`file_sha256` is the SHA-256 of the exact stored bytes. For `damage_note` there
-is no file: `storage_path` is `<table>/<id>/<column>` and the hash is of that
-column's text.
+`file_sha256` is the SHA-256 of the exact stored bytes. A `damage_note` or an
+`invoice_issued` entry has no file. Its `storage_path` is `<table>/<id>/<column>`,
+and the hash is of that column's text. For an invoice or credit note, that
+column is `invoices/<id>/issued_json`, the JSON it was issued with, and `label`
+is the invoice number.
 
 ### Checking one chain
 
