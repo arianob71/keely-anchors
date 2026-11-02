@@ -48,14 +48,99 @@ bytes could be relabelled, or pointed at a different object, without breaking
 the chain. **A v1 row is always checked with the v1 formula.** It was hashed
 that way; re-hashing it under v2 would read as tampering.
 
+### v3 (`format = 3`, everything written after migration 0100)
+
+```
+entry_hash = sha256( prev_hash |booking_id |kind |label |storage_path
+                     |file_sha256 |btc_block_height |btc_block_hash |phash
+                     |created_iso )
+```
+
+NULLs are the empty string, as in v2; `btc_block_height` is written in decimal.
+The three new fields are filled by the app when the entry is made:
+
+- `btc_block_height`, `btc_block_hash`: the newest Bitcoin block the app could
+  see (mempool.space, with blockstream.info as fallback), cached for at most 60
+  seconds. Both are NULL when neither explorer could be reached; the entry is
+  still made.
+- `phash`: for an inspection photo, a 64-bit perceptual hash of the image as
+  16 hex characters (pHash: 32×32 greyscale, 2-D DCT, the 8×8 lowest
+  frequencies, one bit each for "above their median"). NULL for other kinds.
+
+**Not-before.** A block's hash cannot be known before the block is mined, so an
+entry that carries one was made *after* that block. The anchor (section 3)
+already gives an upper bound on an entry's age; the block gives a lower bound,
+and neither depends on Keely's clock. To check it:
+
+1. Look the block up by hash on mempool.space or blockstream.info
+   (`GET /api/block/<btc_block_hash>`). It must exist.
+2. Its `height` must equal `btc_block_height`.
+3. Its `timestamp` must be no later than `created_iso` plus 10 minutes. Block
+   timestamps are set by miners and may run a little ahead of real time.
+
+Read the result as "recorded after block N". A block that does not exist, or one
+mined after the entry, means the claim is false. The entry's hash still holds,
+because the claim was hashed as written, but it proves nothing about time.
+
+**Perceptual hash.** Near-identical images (re-saved, resized, recompressed) land
+a few bits apart, while unrelated scenes differ in about 32 of the 64 bits.
+Compare by Hamming distance and never by equality: another decoder may differ by
+a bit or two. Keely flags photos within 10 bits of a photo from a different
+booking (`similar_photos`). That is a signal to look at, not a finding.
+
 `kind` is one of `inspection_out_photo`, `inspection_in_photo`, `damage_note`,
-`contract`, `invoice_issued`.
+`contract`, `invoice_issued`, `renter_confirmation`, `dispute_reply`.
 
 `file_sha256` is the SHA-256 of the exact stored bytes. A `damage_note` or an
 `invoice_issued` entry has no file. Its `storage_path` is `<table>/<id>/<column>`,
 and the hash is of that column's text. For an invoice or credit note, that
 column is `invoices/<id>/issued_json`, the JSON it was issued with, and `label`
 is the invoice number.
+
+A `renter_confirmation` entry is the renter's own answer to a handover or return
+inspection, given from a one-time link on their phone (migration 0101). It has
+no file of its own. Its `storage_path` is
+`inspection_confirmations/<id>/evidence_json`, and that column holds the exact
+text that was hashed:
+
+```
+{"ts": "<created, to microseconds, UTC>", "note": <text or null>, "status": "confirmed" | "disputed",
+ "client_ts": <the phone's own time for an answer queued offline, or null>,
+ "photo_sha256": <sha256 of the renter's photo, or null>, "inspection_id": "<uuid>",
+ "disputed_photo_ids": ["<photo id>", …]}
+```
+
+When the driver continues without the renter (no phone, no internet, refused,
+other), the entry still exists, with `status` `skipped` and its reason:
+`{"ts": …, "note": <text or null>, "reason": "no_phone" | "no_internet" | "refused" | "other", "status": "skipped", "inspection_id": …}`,
+labelled `Renter did not confirm handover condition`. Answers written before
+migration 0102 have no `client_ts` key.
+
+After a dispute the driver can retake the flagged photos (each retake is a new
+photo entry; the first photo stays in the chain) and the renter answers again on
+the same link (migration 0105). That answer is a new `renter_confirmation` entry,
+never an edit of the first one: `storage_path` is
+`inspection_reconfirmations/<id>/evidence_json`, holding
+`{"ts": …, "note": …, "round": 2, "status": "confirmed" | "disputed", "retaken": ["<photo id>", …], "client_ts": …, "photo_sha256": …, "inspection_id": …, "disputed_photo_ids": […]}`,
+with the same label form as the first answer.
+
+Instead of a retake, the driver can add the flagged damage (migration 0107). That
+is a `damage_note` entry of its own, never an edit of `inspections.damage_notes`:
+`storage_path` is `handover_flag_actions/<id>/evidence_json`, holding
+`{"ts": …, "note": "<text>", "angle": "<photo id>", "round": 1, "action": "damage_agreed", "by_role": "owner" | "manager" | "driver", "resolution": "agreed_with_renter", "session_id": …, "inspection_id": …}`,
+labelled `Damage agreed with renter: <photo id>`. When every flagged photo is
+agreed this way, the flag is resolved with no new answer from the renter.
+
+A `dispute_reply` entry is the driver's later answer to a dispute (migration
+0102). It is a new entry and never an edit: `storage_path` is
+`dispute_replies/<id>/evidence_json`, holding
+`{"ts": …, "reply": "<text>", "by_role": "owner" | "manager" | "driver", "confirmation_id": "<uuid>"}`.
+
+This is Postgres's `jsonb` text form, so the key order is fixed: shortest key
+first, then alphabetical. As with the audit log, hash the stored text exactly as
+it is. `label` reads `Renter confirmed handover condition`, `Renter disputed
+return condition` and so on. When the renter attached a photo, it is stored in
+`inspection-photos` under the booking, and `photo_sha256` fixes its bytes.
 
 ### Checking one chain
 
@@ -65,6 +150,13 @@ is the invoice number.
 3. Recompute each `entry_hash` with the formula for that row's `format`.
 4. Download each `storage_path` and confirm it hashes to `file_sha256`. Fetch
    the original object — never a thumbnail or a transformed URL.
+5. For a v3 row with a block, run the not-before check above.
+
+`tools/verify_keely_proof.py --entries rows.json` does steps 1–3 and 5 for one
+booking's exported rows (a JSON array of `booking_evidence` rows). For a text
+entry (`damage_note`, `invoice_issued`, `renter_confirmation`, `dispute_reply`), add the hashed
+text to the row as `payload` and it is checked against `file_sha256` too; a
+renter confirmation is then printed with its answer and time.
 
 A break tells you where: the first row whose `prev_hash` does not match is the
 earliest point something was removed or reordered.
@@ -144,6 +236,26 @@ leaves:<count>
 The first line is `keely-anchor v3`; v3 follows exactly the v2 rules and only the
 name changed. Older anchors start `sayara-anchor v2` (or `v1`, one-chain leaves).
 
+From `keely-anchor v4` (same leaf rules as v2) the manifest is signed by Keely and
+is exactly seven lines:
+
+```
+keely-anchor v4
+date:2026-11-02
+root:<64 hex>
+leaves:<count>
+key_id:<8 hex>
+key_sha256:<64 hex>
+sig:<88 base64>
+```
+
+`key_sha256` is sha256 of Keely's 32-byte public key and `key_id` its first 8 hex.
+`sig` is Keely's Ed25519 signature of the canonical JSON (see *Keely signature*
+below) of
+`{"type": "keely-anchor", "v": 1, "date": …, "root": …, "leaves": <integer>, "key_sha256": …, "key_id": …}`.
+The whole file, signature included, is what gets timestamped, so the signing key's
+fingerprint and the signature are in Bitcoin together with the root.
+
 `digest = sha256( manifest bytes )`. Several anchors may share a date; each is
 a separate run covering everything newer than the previous one.
 
@@ -176,6 +288,33 @@ affects the anchor itself.
 
 ---
 
+### Keely signature
+
+Keely signs anchor manifests and rental record certificates with one Ed25519 key
+(RFC 8032). The private key lives only in Keely's signing function; it is never
+logged or returned.
+
+- **Public key**: `https://keely.ae/.well-known/keely-signing-key.json`, also
+  `.well-known/keely-signing-key.json` in the public log:
+  `{"alg": "Ed25519", "key_id": "<8 hex>", "public_key": "<base64, 32 bytes>", "key_sha256": "<64 hex>", "valid_from": "YYYY-MM-DD", "status": "active"}`.
+  `key_id` is the first 8 hex of sha256(public key), so a key id cannot point at a
+  different key. A replaced key moves to `"previous"` with `"status": "retired"`
+  and still verifies what it signed; `"revoked"` never verifies.
+- **Signed text**: the canonical JSON of the payload — object keys sorted, no
+  whitespace, UTF-8; strings, integers, booleans, null, arrays and objects only.
+  In Python: `json.dumps(p, sort_keys=True, separators=(',', ':'), ensure_ascii=False)`.
+  Every payload has a `type` (`keely-anchor` or `keely-certificate`), a version `v`
+  and the `key_id`, so a signature for one kind of document never passes as another.
+- **Certificate**: page 2 of a rental record certificate prints the signed text, the
+  signature (base64) and the key id. The payload is built by Keely from the booking:
+  `{"type": "keely-certificate", "v": 1, "booking_ref": "KY-…", "record_code": "<12 hex>", "head": "<64 hex>", "anchor_root": "<64 hex>" | null, "anchor_date": "YYYY-MM-DD" | null, "issued_at": "YYYY-MM-DDTHH:MM:SSZ", "key_id": …}`
+  — `head` is the booking's evidence chain tip, `anchor_root` the root of the newest
+  anchor holding the booking.
+- **Check**: `python3 tools/verify_keely_proof.py --sig signed.json` with
+  `{"payload": {…}, "sig": "…", "key_id": "…"}` (or `"canonical": "<the printed text>"`);
+  anchors with a v4 manifest are checked as part of the normal anchor run. Add
+  `--key keely-signing-key.json` to use a saved copy of the public key.
+
 ## 4. Verifying a bundle, start to finish
 
 The downloaded bundle is `keely-anchor-<date>-<HHMM>.txt` (the manifest), one
@@ -201,6 +340,9 @@ ots verify -f keely-anchor-2026-10-15-2300.txt \
 6. To go further, ask the operator for the booking's `booking_evidence` and
    `booking_audit_log` rows and the stored files, then run the checks in
    sections 1 and 2. The heads you recompute must equal the ones in the JSON.
+   For the evidence rows: `python3 verify_keely_proof.py --entries rows.json
+   KY-<ref>-path.json` re-checks the chain and v3 blocks, and confirms that the
+   anchored head is in it.
 
 Steps 1–5 need nothing from Keely beyond the files themselves. Step 6 needs
 the rows, but it needs no trust: anything altered fails.
@@ -210,7 +352,9 @@ the rows, but it needs no trust: anything altered fails.
 ## 5. What this proves, and what it does not
 
 **Proves.** That the record existed in exactly this form no later than the
-Bitcoin block's timestamp, and that it has not changed since. Every file,
+Bitcoin block's timestamp, and that it has not changed since. For v3 entries
+with a block, also that each entry was made no earlier than that block was
+mined: an upper and a lower bound, both from Bitcoin. Every file,
 label, path, note and booking-field change is inside a hash committed to that
 block. Alter any byte and the chain breaks; remove an entry and the links
 either side no longer meet. Nobody — operator, renter or Keely — can
@@ -223,7 +367,10 @@ retroactively edit, insert or delete without it showing.
   photo was not staged.
 - **When a photo was taken.** `created_iso` is when the *server received* the
   entry. A photo taken on Monday and uploaded on Wednesday is anchored
-  Wednesday. The anchor is an upper bound on age, never a lower one.
+  Wednesday. The anchor is an upper bound on age. A v3 block is a lower bound
+  on when the *entry* was made, not on when the photo was taken: an old photo
+  can still be uploaded today. The perceptual hash helps here, because a photo
+  reused from another booking is flagged as similar.
 - **Who the signer was.** A signature proves a signature was captured on a
   device at a time, and the record proves it has not changed. It does not
   establish that the named person made it. Identity rests on the licence and
