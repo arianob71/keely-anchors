@@ -1,0 +1,8 @@
+{
+  "alg": "Ed25519",
+  "key_id": "d8da4980",
+  "public_key": "G6w4QU5NIDujXLFNrNYjiHJ3oEJQtwyFxRRYBXXOzrc=",
+  "key_sha256": "d8da49806742e63e0ebe421746b00c90e1ea2dff510d12caec1835d227fc867d",
+  "valid_from": "2026-11-02",
+  "status": "active"
+}
