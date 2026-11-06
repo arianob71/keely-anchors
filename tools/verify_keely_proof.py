@@ -17,9 +17,10 @@ With --entries it checks one booking's evidence rows (a JSON array of
 booking_evidence rows): every link and entry hash under the row's own format
 (1, 2 or 3), and for v3 rows the not-before block: it must exist, have the
 recorded height, and be mined no later than created_iso + 10 minutes. A text
-entry (damage_note, invoice_issued, renter_confirmation, dispute_reply) that carries its hashed
-text as "payload" is checked against file_sha256, and a renter confirmation is
-printed with its answer. With a path.json it also confirms the anchored
+entry (damage_note, invoice_issued, renter_confirmation, dispute_reply, photo_check, documents_submitted,
+identity_verified_in_person) that carries its
+hashed text as "payload" is checked against file_sha256, and a renter confirmation is
+printed with its answer (an AI photo check with its result). With a path.json it also confirms the anchored
 evidence head is in the chain.
 
 From keely-anchor v4 on, the manifest is also signed by Keely: it names the
@@ -232,7 +233,8 @@ EXPLORERS = (('mempool.space', 'https://mempool.space/api'),
              ('blockstream.info', 'https://blockstream.info/api'))
 ZERO = '0' * 64
 SKEW = 600   # a block's timestamp may run up to 10 minutes ahead of created_iso
-TEXT_KINDS = ('damage_note', 'invoice_issued', 'renter_confirmation', 'dispute_reply')
+TEXT_KINDS = ('damage_note', 'invoice_issued', 'renter_confirmation', 'dispute_reply', 'photo_check',
+              'documents_submitted', 'identity_verified_in_person')
 
 
 def get(url):
@@ -377,6 +379,26 @@ def check_entries(rows_path, path_json=None):
             except ValueError:
                 sys.exit(f'FAIL  entry {i}: the dispute reply payload is not JSON')
             print(f'OK    entry {i}: reply to the dispute by the {p.get("by_role")} at {p.get("ts")}')
+        elif r['kind'] == 'photo_check':
+            try:
+                p = json.loads(r['payload'])
+            except ValueError:
+                sys.exit(f'FAIL  entry {i}: the photo check payload is not JSON')
+            n = len((p.get('details') or {}).get('findings') or [])
+            extra = f', read {p.get("read_value")}' if p.get('read_value') else (f', {n} finding(s) for review' if p.get('kind') == 'damage_diff' else '')
+            print(f'OK    entry {i}: AI photo check ({p.get("kind")}) {p.get("result")}{extra}, {len(p.get("evidence_ids") or [])} photo(s), {p.get("model") or "no model call"}, at {p.get("ts")}')
+        elif r['kind'] == 'documents_submitted':
+            lines = [x for x in r['payload'].split('\n') if x]
+            if not all(len(x.split('|')) == 3 and len(x.split('|')[2]) == 64 for x in lines):
+                sys.exit(f'FAIL  entry {i}: the document list is not "kind|side|sha256" lines')
+            print(f'OK    entry {i}: renter documents sent: {", ".join(x.split("|")[0] for x in lines)}')
+        elif r['kind'] == 'identity_verified_in_person':
+            try:
+                p = json.loads(r['payload'])
+            except ValueError:
+                sys.exit(f'FAIL  entry {i}: the identity check payload is not JSON')
+            seen_ = ', original ID seen' if p.get('original_seen') else ''
+            print(f'OK    entry {i}: identity {"matched" if p.get("match") else "did not match"} in person{seen_} at {p.get("at")}')
         else:
             print(f'OK    entry {i}: {r["kind"]} text matches its hash')
 
