@@ -89,7 +89,8 @@ a bit or two. Keely flags photos within 10 bits of a photo from a different
 booking (`similar_photos`). That is a signal to look at, not a finding.
 
 `kind` is one of `inspection_out_photo`, `inspection_in_photo`, `damage_note`,
-`contract`, `invoice_issued`, `renter_confirmation`, `dispute_reply`.
+`contract`, `invoice_issued`, `renter_confirmation`, `dispute_reply`, `photo_check`,
+`documents_submitted`, `identity_verified_in_person`.
 
 `file_sha256` is the SHA-256 of the exact stored bytes. A `damage_note` or an
 `invoice_issued` entry has no file. Its `storage_path` is `<table>/<id>/<column>`,
@@ -136,11 +137,38 @@ A `dispute_reply` entry is the driver's later answer to a dispute (migration
 `dispute_replies/<id>/evidence_json`, holding
 `{"ts": …, "reply": "<text>", "by_role": "owner" | "manager" | "driver", "confirmation_id": "<uuid>"}`.
 
+A `photo_check` entry is the result of an AI photo check (migration 0112): an
+inspection photo read by the model and compared with what was typed: the
+`plate`, the `odometer` (±1%), the `fuel` gauge (±1/8), or a return photo against
+the pickup photo of the same angle (`damage_diff`). Only the photo-check function
+writes one. `storage_path` is `photo_checks/<id>/evidence_json`, holding
+`{"ts": …, "kind": "plate" | "odometer" | "fuel" | "damage_diff", "model": "claude-haiku-5-5", "result": "match" | "mismatch" | "unreadable", "details": {…}, "check_id": "<uuid>", "booking_id": …, "read_value": <text or null>, "evidence_ids": [<photo entry id>, …], "inspection_id": …}`,
+labelled `AI photo check: <kind> <result>`. `evidence_ids` names the photo entries
+it read, so the result is tied to those exact bytes. A `damage_diff` finding
+(`details.findings`: angle, description, confidence) is a prompt for a person to
+look, never a charge.
+
 This is Postgres's `jsonb` text form, so the key order is fixed: shortest key
 first, then alphabetical. As with the audit log, hash the stored text exactly as
 it is. `label` reads `Renter confirmed handover condition`, `Renter disputed
 return condition` and so on. When the renter attached a photo, it is stored in
 `inspection-photos` under the booking, and `photo_sha256` fixes its bytes.
+
+A `documents_submitted` entry seals the renter's identity documents as sent from
+their upload link (migration 0121), without the images. `storage_path` is
+`car_passes/<id>/docs_manifest`, holding one `kind|side|sha256` line per document
+(`id_front|front|…`, `passport||…`), sorted, joined by `\n`; `file_sha256` is the
+SHA-256 of that text, which is also the digest the car pass is bound to. The
+document images stay private to the company; a replaced photo adds a new entry.
+Labelled `Renter documents · <n> photos`.
+
+An `identity_verified_in_person` entry is a staff answer at pickup: the person
+compared with the face crop and the original document. Each answer is its own
+entry (a "doesn't match" can be followed by a match, which uses the car pass).
+`storage_path` is `identity_checks/<id>/statement`, holding
+`{"at": "<UTC>", "by": "<user id>", "type": "identity_verified_in_person", "match": true | false, "reason": <text or null>, "pass_id": …, "booking_id": …, "docs_digest": …, "original_seen": true | false | null}`
+(Postgres `jsonb` text), labelled `Identity verified in person` or
+`Identity did not match`.
 
 ### Checking one chain
 
@@ -154,9 +182,10 @@ return condition` and so on. When the renter attached a photo, it is stored in
 
 `tools/verify_keely_proof.py --entries rows.json` does steps 1–3 and 5 for one
 booking's exported rows (a JSON array of `booking_evidence` rows). For a text
-entry (`damage_note`, `invoice_issued`, `renter_confirmation`, `dispute_reply`), add the hashed
-text to the row as `payload` and it is checked against `file_sha256` too; a
-renter confirmation is then printed with its answer and time.
+entry (`damage_note`, `invoice_issued`, `renter_confirmation`, `dispute_reply`, `photo_check`,
+`documents_submitted`, `identity_verified_in_person`), add the
+hashed text to the row as `payload` and it is checked against `file_sha256` too; a
+renter confirmation is then printed with its answer and time, a photo check with its result.
 
 A break tells you where: the first row whose `prev_hash` does not match is the
 earliest point something was removed or reordered.
