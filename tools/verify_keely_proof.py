@@ -18,7 +18,7 @@ booking_evidence rows): every link and entry hash under the row's own format
 (1, 2 or 3), and for v3 rows the not-before block: it must exist, have the
 recorded height, and be mined no later than created_iso + 10 minutes. A text
 entry (damage_note, invoice_issued, renter_confirmation, dispute_reply, photo_check, documents_submitted,
-identity_verified_in_person) that carries its
+identity_verified_in_person, handover_completed, pass_scanned, message) that carries its
 hashed text as "payload" is checked against file_sha256, and a renter confirmation is
 printed with its answer (an AI photo check with its result). With a path.json it also confirms the anchored
 evidence head is in the chain.
@@ -234,7 +234,7 @@ EXPLORERS = (('mempool.space', 'https://mempool.space/api'),
 ZERO = '0' * 64
 SKEW = 600   # a block's timestamp may run up to 10 minutes ahead of created_iso
 TEXT_KINDS = ('damage_note', 'invoice_issued', 'renter_confirmation', 'dispute_reply', 'photo_check',
-              'documents_submitted', 'identity_verified_in_person')
+              'documents_submitted', 'identity_verified_in_person', 'handover_completed', 'pass_scanned', 'message')
 
 
 def get(url):
@@ -399,6 +399,20 @@ def check_entries(rows_path, path_json=None):
                 sys.exit(f'FAIL  entry {i}: the identity check payload is not JSON')
             seen_ = ', original ID seen' if p.get('original_seen') else ''
             print(f'OK    entry {i}: identity {"matched" if p.get("match") else "did not match"} in person{seen_} at {p.get("at")}')
+        elif r['kind'] == 'handover_completed':
+            try:
+                p = json.loads(r['payload'])
+            except ValueError:
+                sys.exit(f'FAIL  entry {i}: the handover statement is not JSON')
+            print(f'OK    entry {i}: keys handed over at {p.get("at")}')
+        elif r['kind'] == 'pass_scanned':
+            try:
+                p = json.loads(r['payload'])
+            except ValueError:
+                sys.exit(f'FAIL  entry {i}: the pass scan statement is not JSON')
+            print(f'OK    entry {i}: car pass scanned at {p.get("at")}')
+        elif r['kind'] == 'message':
+            print(f'OK    entry {i}: {(r.get("label") or "message").lower()} — its text matches the hash')
         else:
             print(f'OK    entry {i}: {r["kind"]} text matches its hash')
 
