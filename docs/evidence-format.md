@@ -90,7 +90,7 @@ booking (`similar_photos`). That is a signal to look at, not a finding.
 
 `kind` is one of `inspection_out_photo`, `inspection_in_photo`, `damage_note`,
 `contract`, `invoice_issued`, `renter_confirmation`, `dispute_reply`, `photo_check`,
-`documents_submitted`, `identity_verified_in_person`.
+`documents_submitted`, `identity_verified_in_person`, `handover_completed`, `pass_scanned`, `message`.
 
 `file_sha256` is the SHA-256 of the exact stored bytes. A `damage_note` or an
 `invoice_issued` entry has no file. Its `storage_path` is `<table>/<id>/<column>`,
@@ -170,6 +170,22 @@ entry (a "doesn't match" can be followed by a match, which uses the car pass).
 (Postgres `jsonb` text), labelled `Identity verified in person` or
 `Identity did not match`.
 
+A `handover_completed` entry is the staff's "Hand over the keys" at the end of a
+handover started from the car pass: the renter confirmed the condition and signed.
+`storage_path` is `handover_sessions/<id>/completion_statement`, holding
+`{"at": "<UTC>", "by": "<user id>", "type": "handover_completed", "pass_id": …, "booking_id": …, "session_id": …}`
+(Postgres `jsonb` text), labelled `Keys handed over`.
+
+A `pass_scanned` entry is the first scan of the renter's car pass by a staff member
+at pickup: it records who scanned it and when, and makes no claim about identity.
+`storage_path` is `car_passes/<id>/scan_statement`, holding
+`{"at": "<UTC>", "by": "<user id>", "type": "pass_scanned", "pass_id": …, "booking_id": …}`
+(Postgres `jsonb` text), labelled `Pass scanned`.
+
+A `message` entry is a WhatsApp message between the company and the renter (Keely Relay).
+`storage_path` is `messages/<id>/body`, the text exactly as sent or received, labelled
+`Message sent` or `Message received`. The renter's number is not part of the entry.
+
 ### Checking one chain
 
 1. Order the booking's rows by `id`. That is the chain order.
@@ -183,7 +199,7 @@ entry (a "doesn't match" can be followed by a match, which uses the car pass).
 `tools/verify_keely_proof.py --entries rows.json` does steps 1–3 and 5 for one
 booking's exported rows (a JSON array of `booking_evidence` rows). For a text
 entry (`damage_note`, `invoice_issued`, `renter_confirmation`, `dispute_reply`, `photo_check`,
-`documents_submitted`, `identity_verified_in_person`), add the
+`documents_submitted`, `identity_verified_in_person`, `handover_completed`, `pass_scanned`, `message`), add the
 hashed text to the row as `payload` and it is checked against `file_sha256` too; a
 renter confirmation is then printed with its answer and time, a photo check with its result.
 
@@ -230,9 +246,19 @@ A head is that chain's last `entry_hash`, or 64 zeros when the chain is empty �
 so "this booking had no audit entries" is itself anchored. The manifest's first
 line says which version built the leaves.
 
+From 0150 an anchor may also hold **case leaves**, after the booking leaves:
+
+```
+case leaf = sha256( "cases|" operator_id "|" case_chain_head )
+```
+
+A company's case chain (its private case files) is never published; the leaf
+only fixes its tip in time. It names no booking or renter, and a booking's proof
+path is unaffected. `leaves:<count>` and `leaves.txt` include case leaves.
+
 ### Merkle tree
 
-- Leaves are sorted by `booking_id`.
+- Booking leaves are sorted by `booking_id`, then case leaves by `operator_id`.
 - `parent = sha256( left_bytes || right_bytes )` — raw 32-byte concatenation,
   not hex.
 - An odd node is **promoted unchanged** to the next level. It is not duplicated:
