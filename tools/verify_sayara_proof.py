@@ -1,10 +1,26 @@
 """Verify a Keely rental-record anchor against Bitcoin, without trusting Keely.
 
-Usage:  python3 verify_keely_proof.py <proof.ots> <anchor.txt> [path.json]
+Usage:  python3 verify_keely_proof.py <proof-bundle.zip>
+        python3 verify_keely_proof.py <proof.ots> <anchor.txt> [path.json]
         python3 verify_keely_proof.py --entries <rows.json> [path.json]
         python3 verify_keely_proof.py --sig <signed.json>
+        python3 verify_keely_proof.py --root-keys <keely-root-keys> <keely-signing-key.json.sig> [--revoked <keely-root-keys.revoked>]
         add --key <keely-signing-key.json> to any of them to use a saved copy of
         Keely's public key instead of https://keely.ae/.well-known/keely-signing-key.json
+
+With a proof bundle (the zip a renter downloads from the receipt: "Download proof
+bundle") it runs everything in one go and ends with the same four checks as
+keely.ae/trust: Unchanged · In Bitcoin · Signed by Keely · Key confirmed by root key.
+The bundle carries its own copy of every key; compare the root key fingerprints it
+prints with https://keely.ae/.well-known/keely-root-keys and the public anchor log.
+
+With --root-keys it checks that one of Keely's root keys (YubiKeys, OpenSSH
+sk-ssh-ed25519) endorsed the signing key: the .sig is an SSHSIG (namespace
+"keely-key") over the exact bytes of keely-signing-key.json, made by a key listed
+in keely-root-keys (allowed_signers format), with the security key's own flags
+saying it was touched (user presence) and unlocked with its PIN (user
+verification), and not listed in keely-root-keys.revoked. The same check as
+ssh-keygen -Y verify -f keely-root-keys -I keely-root-a -n keely-key -s <.sig> -r <revoked>.
 
 With two arguments it proves the anchor itself: the .txt is what the .ots is a
 proof of, and a Bitcoin block commits to it.
@@ -50,6 +66,7 @@ PENDING = bytes.fromhex('83dfe30d2ef90c8e')
 HEADERS = {'sayara-anchor v1': 1, 'sayara-anchor v2': 2, 'keely-anchor v3': 3, 'keely-anchor v4': 4}
 KEY_URL = 'https://keely.ae/.well-known/keely-signing-key.json'
 KEY_FILE = None   # --key
+ROOT_KEYS_URL = 'https://keely.ae/.well-known/keely-root-keys'
 
 
 # ── Ed25519 verification (RFC 8032 section 5.1), pure Python ────────────────
@@ -238,8 +255,12 @@ TEXT_KINDS = ('damage_note', 'invoice_issued', 'renter_confirmation', 'dispute_r
 
 
 def get(url):
+    return get_bytes(url).decode().strip()
+
+
+def get_bytes(url):
     req = urllib.request.Request(url, headers={'User-Agent': 'keely-verify/1'})
-    return urllib.request.urlopen(req, timeout=20).read().decode().strip()
+    return urllib.request.urlopen(req, timeout=20).read()
 
 
 def header(url_base, height):
@@ -451,6 +472,13 @@ def check_entries(rows_path, path_json=None):
 
 
 def main(ots_path, txt_path, path_json=None):
+    anchor_text = check_ots(ots_path, txt_path, sig=True)
+    if path_json:
+        check_path(path_json, anchor_text)
+
+
+def check_ots(ots_path, txt_path, sig=True):
+    """The .ots proves the anchor text; a Bitcoin block commits to it. Returns the anchor text."""
     data = open(ots_path, 'rb').read()
     if not data.startswith(MAGIC): sys.exit('FAIL  not an OpenTimestamps proof file')
     r = Reader(data); r.take(len(MAGIC))
@@ -463,7 +491,7 @@ def main(ots_path, txt_path, path_json=None):
     file_hash = hashlib.sha256(open(txt_path, 'rb').read()).digest()
     if file_hash != digest: sys.exit('FAIL  the .txt does not match this proof')
     print(f'OK    file fingerprint matches the proof  ({digest.hex()[:16]}...)  [{head}]')
-    if HEADERS[head] >= 4: check_manifest_sig(anchor_text)
+    if HEADERS[head] >= 4 and sig: check_manifest_sig(anchor_text)
 
     found = []; walk(r, digest, found)
     btc = [f for f in found if f[0] == 'bitcoin']
@@ -478,9 +506,214 @@ def main(ots_path, txt_path, path_json=None):
             when = datetime.datetime.fromtimestamp(int.from_bytes(h[68:72], 'little'), datetime.timezone.utc)
             print(f'OK    Bitcoin block {height} contains it  (checked on {name}, mined {when:%Y-%m-%d %H:%M} UTC)')
     print('\nVERIFIED  This exact record existed no later than that block, and has not changed since.')
+    return anchor_text
 
-    if path_json:
-        check_path(path_json, anchor_text)
+
+# ── Keely's root keys: an SSHSIG endorsement of the signing key (OpenSSH PROTOCOL.sshsig, PROTOCOL.u2f) ──────────
+ROOT_NS = 'keely-key'
+KTYPES = ('ssh-ed25519', 'sk-ssh-ed25519@openssh.com')
+
+
+def _sstr(b, i):
+    n = int.from_bytes(b[i:i + 4], 'big')
+    if i + 4 + n > len(b): raise ValueError('short')
+    return b[i + 4:i + 4 + n], i + 4 + n
+
+
+def _wrap(b): return len(b).to_bytes(4, 'big') + b
+
+
+def ssh_pub(blob):
+    t, i = _sstr(blob, 0); k, i = _sstr(blob, i); app = None
+    t = t.decode()
+    if t not in KTYPES or len(k) != 32: raise ValueError('key type')
+    if t == KTYPES[1]: app, i = _sstr(blob, i)
+    if i != len(blob): raise ValueError('key trailing')
+    return t, k, app
+
+
+def fingerprint(blob): return 'SHA256:' + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip('=')
+
+
+def allowed_signers(text):
+    """[(principal, key blob, namespaces | None, no_touch)] from an allowed_signers file."""
+    out = []
+    for line in text.splitlines():
+        l = line.strip()
+        if not l or l.startswith('#'): continue
+        tok = re.findall(r'(?:[^\s"]+|"[^"]*")+', l)
+        ti = next((k for k, t in enumerate(tok) if t in KTYPES), -1)
+        if ti < 1 or ti + 1 >= len(tok): continue
+        try:
+            blob = base64.b64decode(tok[ti + 1]); ssh_pub(blob)
+        except Exception:
+            continue
+        opts = ','.join(tok[1:ti]); m = re.search(r'namespaces="([^"]*)"', opts)
+        out.append((tok[0], blob, [x.strip() for x in m.group(1).split(',')] if m else None, bool(re.search(r'(^|,)no-touch-required(,|$)', opts))))
+    return out
+
+
+def revoked_keys(text):
+    out = []
+    for line in (text or '').splitlines():
+        t = line.split()
+        if not t or t[0].startswith('#'): continue
+        k = next((n for n, x in enumerate(t) if x in KTYPES), -1)
+        if k >= 0 and k + 1 < len(t):
+            try: out.append(base64.b64decode(t[k + 1]))
+            except Exception: pass
+    return out
+
+
+def sshsig_blobs(text):
+    return [base64.b64decode(''.join(m.split())) for m in re.findall(r'-----BEGIN SSH SIGNATURE-----(.*?)-----END SSH SIGNATURE-----', text, re.S)]
+
+
+def verify_sshsig(blob, msg, signers, ns=ROOT_NS):
+    """-> (ok, reason, principal, key blob). A security key must report touch (0x01) and PIN (0x04)."""
+    try:
+        if blob[:6] != b'SSHSIG' or int.from_bytes(blob[6:10], 'big') != 1: return (False, 'not an SSHSIG', None, None)
+        i = 10; pub, i = _sstr(blob, i); nsb, i = _sstr(blob, i); reserved, i = _sstr(blob, i); halg, i = _sstr(blob, i); sig, i = _sstr(blob, i)
+        if i != len(blob): return (False, 'trailing bytes', None, pub)
+    except Exception:
+        return (False, 'unreadable signature', None, None)
+    if nsb.decode() != ns: return (False, f'namespace {nsb.decode()!r}, not {ns!r}', None, pub)
+    if halg not in (b'sha512', b'sha256'): return (False, 'unknown hash', None, pub)
+    who = next((s for s in signers if s[1] == pub), None)
+    if not who: return (False, 'signed by a key that is not one of Keely\'s root keys', None, pub)
+    if who[2] is not None and ns not in who[2]: return (False, 'that root key is not allowed for ' + ns, who[0], pub)
+    t, key, app = ssh_pub(pub)
+    try:
+        st, j = _sstr(sig, 0); raw, j = _sstr(sig, j)
+        if st.decode() != t or len(raw) != 64: raise ValueError
+        flags = counter = None
+        if app is not None: flags, counter = sig[j], int.from_bytes(sig[j + 1:j + 5], 'big'); j += 5
+        if j != len(sig): raise ValueError
+    except Exception:
+        return (False, 'unreadable signature', who[0], pub)
+    signed = b'SSHSIG' + _wrap(nsb) + _wrap(reserved) + _wrap(halg) + _wrap((hashlib.sha512 if halg == b'sha512' else hashlib.sha256)(msg).digest())
+    data = signed
+    if app is not None:
+        if not who[3] and not flags & 0x01: return (False, 'the security key was not touched (no user-presence flag)', who[0], pub)
+        if not flags & 0x04: return (False, 'the security key\'s PIN was not entered (no user-verification flag)', who[0], pub)
+        data = hashlib.sha256(app).digest() + bytes([flags]) + counter.to_bytes(4, 'big') + hashlib.sha256(signed).digest()
+    if not ed25519_verify(key, data, raw): return (False, 'the signature does not match the key file', who[0], pub)
+    return (True, 'ok', who[0], pub)
+
+
+def check_root_keys(root_keys_path, sig_path, revoked_path=None, key_bytes=None):
+    """One of Keely's root keys endorsed the signing key file (its exact bytes)."""
+    if key_bytes is None:
+        try: key_bytes = open(KEY_FILE, 'rb').read() if KEY_FILE else get_bytes(KEY_URL)
+        except Exception: sys.exit('WAIT  Keely\'s public key file could not be fetched (pass --key to use a saved copy)')
+    signers = allowed_signers(open(root_keys_path, encoding='utf-8').read())
+    if not signers: sys.exit('FAIL  no root keys in ' + root_keys_path)
+    blobs = sshsig_blobs(open(sig_path, encoding='utf-8').read())
+    if not blobs: sys.exit('FAIL  no SSH signature in ' + sig_path)
+    revoked = revoked_keys(open(revoked_path, encoding='utf-8').read()) if revoked_path else []
+    why = 'no valid endorsement'
+    for b in blobs:
+        ok, reason, who, pub = verify_sshsig(b, key_bytes, signers)
+        if pub is not None and pub in revoked: why = f'root key {who or fingerprint(pub)} has been revoked'; continue
+        if ok:
+            kid = json.loads(key_bytes.decode()).get('key_id')
+            print(f'OK    Key confirmed by root key {who}  ({fingerprint(pub)}; touch + PIN on the YubiKey) — signing key {kid}')
+            return who, fingerprint(pub), kid
+        why = reason
+    sys.exit('FAIL  ' + why)
+
+
+# ── a renter's proof bundle (receipt → "Download proof bundle"): everything at once ────────────────────────────────
+def check_bundle(zip_path):
+    import contextlib, io, os, tempfile, zipfile
+    global KEY_FILE
+    z = zipfile.ZipFile(zip_path)
+    for n in z.namelist():
+        if n.startswith('/') or '..' in n.split('/'): sys.exit('FAIL  the bundle has an unsafe file name: ' + n)
+    d = tempfile.mkdtemp(prefix='keely-proof-'); z.extractall(d)
+    P = lambda *a: os.path.join(d, *a)
+    ls = lambda sub, ext: sorted(os.path.join(d, sub, f) for f in (os.listdir(P(sub)) if os.path.isdir(P(sub)) else []) if f.endswith(ext))
+    meta = json.load(open(P('records', 'bundle.json'))) if os.path.exists(P('records', 'bundle.json')) else {}
+    print(f'Keely proof bundle  {meta.get("ref", "")}  ({len(z.namelist())} files)\n')
+    res = {}
+
+    def run(name, fn, *a):
+        buf = io.StringIO(); st = 'OK'; out = None
+        try:
+            with contextlib.redirect_stdout(buf): out = fn(*a)
+        except SystemExit as e:
+            msg = str(e.code if e.code is not None else '')
+            buf.write(msg + '\n'); st = 'WAIT' if msg.startswith('WAIT') else 'FAIL'
+        except Exception as e:
+            buf.write(f'FAIL  {e}\n'); st = 'FAIL'
+        text = buf.getvalue()
+        if st == 'OK' and re.search(r'^WAIT', text, re.M): st = 'WAIT'
+        print(f'--- {name} ---'); print(text.rstrip() + '\n')
+        res[name] = (st, out, text)
+        return out
+
+    rows, path = P('records', 'evidence.json'), P('records', 'path.json')
+    txts, otss = ls('anchor', '.txt'), ls('anchor', '.ots')
+    has_anchor = os.path.exists(path) and txts
+
+    def unchanged():
+        files = json.load(open(P('records', 'files.json'))) if os.path.exists(P('records', 'files.json')) else []
+        ev = {int(r['id']): r for r in json.load(open(rows))}
+        gone = [f for f in files if f.get('missing')]
+        files = [f for f in files if not f.get('missing')]
+        for f in files:
+            b = open(P('files', f['file']), 'rb').read()
+            if hashlib.sha256(b).hexdigest() != ev[int(f['entry_id'])]['file_sha256']:
+                sys.exit(f'FAIL  {f["file"]} does not match the fingerprint sealed for it: the file was changed')
+        print(f'OK    {len(files)} file(s) match the fingerprints sealed for them')
+        if gone: print(f'WAIT  {len(gone)} sealed file(s) could not be read from storage when the bundle was made; their records still check')
+        check_entries(rows, path if os.path.exists(path) else None)
+        if has_anchor: check_path(path, open(txts[0], encoding='utf-8').read())
+        else: print('WAIT  not sealed into an anchor yet (tonight)')
+    run('Unchanged', unchanged)
+
+    def bitcoin():
+        if not has_anchor: sys.exit('WAIT  not sealed yet: the Bitcoin proof follows tonight\'s seal')
+        if not otss: sys.exit('WAIT  no .ots proof in the bundle yet')
+        last = None
+        for o in otss:
+            try:
+                check_ots(o, txts[0], sig=False); return
+            except SystemExit as e:
+                last = str(e.code)
+        sys.exit(last or 'FAIL  no proof matched')
+    run('In Bitcoin', bitcoin)
+
+    KEY_FILE = P('keys', 'keely-signing-key.json') if os.path.exists(P('keys', 'keely-signing-key.json')) else KEY_FILE
+
+    def signed():
+        if not has_anchor: sys.exit('WAIT  not sealed yet')
+        t = open(txts[0], encoding='utf-8').read()
+        if not t.startswith('keely-anchor v4\n'): sys.exit('WAIT  this anchor predates Keely\'s signature (keely-anchor v4)')
+        check_manifest_sig(t)
+    run('Signed by Keely', signed)
+
+    def root():
+        if not os.path.exists(P('keys', 'keely-root-keys')) or not os.path.exists(P('keys', 'keely-signing-key.json.sig')):
+            sys.exit('WAIT  no root-key endorsement in this bundle')
+        rv = P('keys', 'keely-root-keys.revoked')
+        return check_root_keys(P('keys', 'keely-root-keys'), P('keys', 'keely-signing-key.json.sig'), rv if os.path.exists(rv) else None,
+                               open(P('keys', 'keely-signing-key.json'), 'rb').read())
+    run('Key confirmed by root key', root)
+
+    print('=== The four checks (as on keely.ae/trust) ===')
+    for name in ('Unchanged', 'In Bitcoin', 'Signed by Keely', 'Key confirmed by root key'):
+        st, out, text = res[name]
+        last = [l for l in text.splitlines() if l.strip()]
+        note = (last[-1][6:] if last else '') if st != 'OK' else ''
+        if name == 'Key confirmed by root key' and st == 'OK' and out: note = f'{out[0]}  {out[1]}'
+        if name == 'Signed by Keely' and st == 'OK': note = (re.search(r'key ([0-9a-f]{8})', text) or [None, ''])[1] and 'key ' + re.search(r'key ([0-9a-f]{8})', text).group(1)
+        if name == 'In Bitcoin' and st == 'OK':
+            m = re.search(r'Bitcoin block (\d+) contains it .*?mined ([^)]+)\)', text); note = f'block {m.group(1)}, mined {m.group(2)}' if m else ''
+        print(f'{st:<5} {name:<27} {note}'.rstrip())
+    if any(r[0] == 'FAIL' for r in res.values()): sys.exit(1)
+    if any(r[0] == 'WAIT' for r in res.values()): sys.exit(2)
+    print('\nVERIFIED  Unchanged, in Bitcoin, signed by Keely, and the key confirmed by Keely\'s root key.')
 
 
 if __name__ == '__main__':
@@ -488,7 +721,16 @@ if __name__ == '__main__':
         i = sys.argv.index('--key')
         if i + 1 >= len(sys.argv): sys.exit(__doc__)
         KEY_FILE = sys.argv[i + 1]; del sys.argv[i:i + 2]
-    if len(sys.argv) == 3 and sys.argv[1] == '--sig':
+    if len(sys.argv) == 2 and sys.argv[1].lower().endswith('.zip'):
+        check_bundle(sys.argv[1])
+    elif len(sys.argv) >= 4 and sys.argv[1] == '--root-keys':
+        rv = None
+        if '--revoked' in sys.argv:
+            i = sys.argv.index('--revoked'); rv = sys.argv[i + 1] if i + 1 < len(sys.argv) else sys.exit(__doc__); del sys.argv[i:i + 2]
+        if len(sys.argv) != 4: sys.exit(__doc__)
+        check_root_keys(sys.argv[2], sys.argv[3], rv)
+        print('\nVERIFIED  Keely\'s signing key is endorsed by one of its root keys.')
+    elif len(sys.argv) == 3 and sys.argv[1] == '--sig':
         check_sig_file(sys.argv[2])
     elif len(sys.argv) in (3, 4) and sys.argv[1] == '--entries':
         check_entries(*sys.argv[2:])
