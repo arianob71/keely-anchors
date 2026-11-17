@@ -1,0 +1,2 @@
+# Keely root keys that must no longer be trusted — one public key per line ("keytype base64 comment"), as
+# ssh-keygen -Y verify -r accepts. Empty: no root key has been revoked.

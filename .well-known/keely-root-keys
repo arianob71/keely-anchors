@@ -1,0 +1,8 @@
+# Keely root keys — OpenSSH allowed_signers format (man ssh-keygen, ALLOWED SIGNERS).
+# Each root key lives on its own YubiKey (sk-ssh-ed25519, touch + PIN). A root key signs keely-signing-key.json;
+# the signature is keely-signing-key.json.sig (SSHSIG, namespace "keely-key"). Revoked root keys: keely-root-keys.revoked.
+# Check it yourself:
+#   ssh-keygen -Y verify -f keely-root-keys -I keely-root-a -n keely-key -s keely-signing-key.json.sig < keely-signing-key.json
+# How these lines are made: docs/root-key-ceremony.md in the Keely repository. Empty until the ceremony.
+keely-root-a namespaces="keely-key" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIIflZ+CSEsxadC2QUhjtjBkWT2a3LKFjM1qMBhjRmOGEAAAADnNzaDprZWVseS1yb290 keely-root-a
+keely-root-b namespaces="keely-key" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIPcHLO9x7CHn9QPlksM3qPIAijwUp80UhzQR3N2JHX+vAAAADnNzaDprZWVseS1yb290 keely-root-b
