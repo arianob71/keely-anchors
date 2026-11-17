@@ -56,6 +56,38 @@ here and at `https://keely.ae/.well-known/keely-signing-key.json`.
 `tools/verify_keely_proof.py` checks the signature with the anchor; `--sig` checks
 a signed certificate on its own. Details: `docs/evidence-format.md`, *Keely signature*.
 
+## Keely's root keys
+
+The signing key is itself endorsed by Keely's root keys: two YubiKeys (OpenSSH
+`sk-ssh-ed25519`, touch + PIN), listed in `.well-known/keely-root-keys`
+(`allowed_signers` format). One of them signs the exact bytes of
+`keely-signing-key.json`; the signature is `.well-known/keely-signing-key.json.sig`
+(SSHSIG, namespace `keely-key`). Revoked root keys are listed in
+`.well-known/keely-root-keys.revoked`. Check it with OpenSSH alone:
+
+```bash
+ssh-keygen -Y verify -f .well-known/keely-root-keys -I keely-root-a -n keely-key \
+  -s .well-known/keely-signing-key.json.sig -r .well-known/keely-root-keys.revoked \
+  < .well-known/keely-signing-key.json
+```
+
+or with `python3 tools/verify_keely_proof.py --root-keys .well-known/keely-root-keys
+.well-known/keely-signing-key.json.sig --revoked .well-known/keely-root-keys.revoked
+--key .well-known/keely-signing-key.json`, which also requires the YubiKey's
+touch and PIN flags inside the signature. Details: `docs/evidence-format.md`, *Root keys*.
+
+## A renter's proof bundle
+
+A renter can download everything for one booking from their receipt (after the
+phone check): `KY-<ref>-proof.zip`. One command checks it, offline except for the
+Bitcoin block lookup:
+
+```bash
+python3 tools/verify_keely_proof.py KY-ABC123-proof.zip
+```
+
+It ends with four lines: Unchanged · In Bitcoin · Signed by Keely · Key confirmed by root key.
+
 ## Verifying one booking
 
 An operator can export a booking's `path.json`. Pass it as a third argument:
