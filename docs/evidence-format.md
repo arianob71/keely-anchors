@@ -370,7 +370,52 @@ logged or returned.
   anchors with a v4 manifest are checked as part of the normal anchor run. Add
   `--key keely-signing-key.json` to use a saved copy of the public key.
 
+### Root keys (the signing key's endorsement)
+
+Above the online signing key sit Keely's **root keys**: OpenSSH security keys
+(`sk-ssh-ed25519@openssh.com`, application `ssh:keely-root`), one per YubiKey,
+created with a PIN required. A root key endorses the signing key by signing the
+exact bytes of `keely-signing-key.json`.
+
+- **Root keys**: `https://keely.ae/.well-known/keely-root-keys` (and
+  `.well-known/keely-root-keys` in the public log), OpenSSH `allowed_signers`
+  format: `keely-root-a namespaces="keely-key" sk-ssh-ed25519@openssh.com AAAA… keely-root-a`.
+- **Endorsement**: `.well-known/keely-signing-key.json.sig`, an SSHSIG (OpenSSH
+  `PROTOCOL.sshsig`): namespace `keely-key`, hash `sha512`, over the key file's bytes.
+  For a security key the Ed25519 signature covers
+  `sha256(application) ‖ flags ‖ counter (uint32) ‖ sha256(SSHSIG signed data)`
+  (`PROTOCOL.u2f`); `flags` must have **user presence (0x01)** and **user
+  verification (0x04)**: the YubiKey was touched and unlocked with its PIN.
+- **Revoked root keys**: `.well-known/keely-root-keys.revoked`, one public key per
+  line (`sk-ssh-ed25519@openssh.com AAAA… comment`). A revoked key's endorsement never counts.
+- **Check**: `ssh-keygen -Y verify -f keely-root-keys -I keely-root-a -n keely-key -s keely-signing-key.json.sig -r keely-root-keys.revoked < keely-signing-key.json`
+  (OpenSSH 8.2+), or `python3 verify_keely_proof.py --root-keys keely-root-keys keely-signing-key.json.sig --revoked keely-root-keys.revoked --key keely-signing-key.json`,
+  which also insists on the two flags.
+
 ## 4. Verifying a bundle, start to finish
+
+### A renter's proof bundle (one command)
+
+On the receipt, after the phone check, **Download proof bundle** gives
+`KY-<ref>-proof.zip`: `records/evidence.json` (every evidence row of the booking with
+exactly the fields its hash covers), `records/files.json` + `files/` (the contract and
+the pickup / return photos, the sealed bytes), `records/path.json`, `anchor/` (the
+night's manifest, its `.ots` proofs, `signature.json`), `keys/` (the signing key, the
+root keys, the endorsement `.sig`, the revocation list), `README.txt` and
+`verify_keely_proof.py`.
+
+```bash
+python3 verify_keely_proof.py KY-<ref>-proof.zip
+```
+
+It runs sections 1, 3 and the two signature checks and ends with the four checks
+of keely.ae/trust — **Unchanged** (files, chain, path to the root) · **In Bitcoin** ·
+**Signed by Keely** · **Key confirmed by root key**. Exit code 0: all four hold;
+2: something is still pending (no Bitcoin block yet, no endorsement); 1: a check
+failed. The bundle carries its own copy of the keys: compare the printed root-key
+fingerprints with `https://keely.ae/.well-known/keely-root-keys` and this log.
+
+### An operator's anchor download
 
 The downloaded bundle is `keely-anchor-<date>-<HHMM>.txt` (the manifest), one
 `.ots` per calendar, and `KY-<ref>-path.json`.
