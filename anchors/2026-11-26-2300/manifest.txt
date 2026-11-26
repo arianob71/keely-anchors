@@ -1,0 +1,7 @@
+keely-anchor v4
+date:2026-11-26
+root:6069fae2ece640c0e0600c7394fce057c041d15d6893bb5690e814b79834b592
+leaves:2
+key_id:d8da4980
+key_sha256:d8da49806742e63e0ebe421746b00c90e1ea2dff510d12caec1835d227fc867d
+sig:LPVWMM10Er3vcxLs/QtWcqFTB8yuLL6ibmAQ6LWGgXdPoLOiHcqlOQnHPkhaR4yMgQza9EwmUVVk0AlHetIVCw==
